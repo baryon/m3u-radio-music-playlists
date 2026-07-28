@@ -24,15 +24,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # Full history so generate_index.js can date every file from git log,
+          # and submodules (iptv) so their playlists make it into the index.
           fetch-depth: 0
+          submodules: recursive
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Generate file index
-        run: node generate_index.js
+      # Builds dist/ — the same command used locally, so what deploys is what
+      # `npm run serve` shows. No `npm ci`: the build has no dependencies.
+      - name: Build site
+        run: npm run build
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -40,7 +45,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: "."
+          path: "dist"
 
       - name: Deploy to GitHub Pages
         id: deployment

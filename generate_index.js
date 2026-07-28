@@ -18,17 +18,42 @@ const EXECUTABLE_EXTENSIONS = new Set([
   ".jar", ".war", ".ear", ".vbs", ".vbe", ".ws", ".wsf", ".msc", ".lnk",
 ]);
 
-// Directories to skip
+// Directories to skip. "dist" and "scripts" are build output/tooling: neither
+// belongs in the browsable index (and indexing dist while building into it
+// would make the index describe itself).
 const EXCLUDED_DIRS = new Set([
   ".git", "node_modules", ".github", "__pycache__", ".vscode", ".idea",
-  ".cache", ".npm", ".yarn", "vendor", ".bundle",
+  ".cache", ".npm", ".yarn", "vendor", ".bundle", "dist", "scripts",
+  // Submodules ship their own test suites; their fixture playlists are broken
+  // by design and shouldn't show up next to real stations.
+  "tests",
+  // Derived content, left out of the published site: +merged+ is a
+  // recombination of the per-source collections, so every stream in it already
+  // appears elsewhere in the repo. At 153 MB / 5878 files it's also the single
+  // biggest directory, and dropping it is what keeps the build under the
+  // GitHub Pages 1 GB site limit (1118 MB -> 965 MB). Remove this line to
+  // publish it again.
+  "+merged+",
 ]);
+
+// Allowlist for directories where only part of the contents is content. A
+// submodule is a dependency, not a collection: iptv/ ships a whole toolchain
+// (README, tsconfig, linter config, ...) around the playlists, and only the
+// playlists belong in the viewer. Keyed by path relative to the repo root;
+// anything not listed under that path is skipped, files included.
+const INCLUDE_ONLY = new Map([["iptv", new Set(["streams"])]]);
 
 // System/meta files to skip
 const EXCLUDED_FILES = new Set([
   "generate_index.js", "file_index.json", ".DS_Store", "Thumbs.db",
-  "desktop.ini", ".gitignore", ".gitattributes", "package-lock.json",
-  "yarn.lock", "pnpm-lock.yaml",
+  "desktop.ini", ".gitignore", ".gitattributes", "package.json",
+  "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+  // Whole-repo aggregate playlists — every stream in them is already in the
+  // per-genre and per-source lists. Verified duplicates: ---randomized.m3u and
+  // ---sorted.m3u are line-for-line the same set as ---everything-lite.m3u
+  // (just reordered), and lite is a subset of full.
+  "---everything-full.m3u", "---everything-lite.m3u",
+  "---randomized.m3u", "---sorted.m3u",
 ]);
 
 // File type categories
@@ -118,12 +143,11 @@ function formatSize(bytes) {
 // like "Radio Ca\303\261\303\263n.m3u" instead of the real UTF-8 filename,
 // which then never matches itemRelativePath and silently falls back to the
 // checkout-time mtime for every such file.
-function buildFileDateMap() {
-  const map = new Map();
+function collectDates(map, cwd, prefix = "") {
   try {
     const output = execSync(
       'git -c core.quotepath=false log --name-only --no-renames --format="%x01%cI"',
-      { encoding: "utf8", maxBuffer: 1024 * 1024 * 256, stdio: ["ignore", "pipe", "ignore"] }
+      { encoding: "utf8", cwd, maxBuffer: 1024 * 1024 * 256, stdio: ["ignore", "pipe", "ignore"] }
     );
     let currentDate = null;
     for (const rawLine of output.split("\n")) {
@@ -131,20 +155,53 @@ function buildFileDateMap() {
       if (!line) continue;
       if (rawLine.startsWith("\x01")) {
         currentDate = rawLine.slice(1).trim();
-      } else if (currentDate && !map.has(line)) {
-        map.set(line, currentDate);
+      } else {
+        const key = prefix ? `${prefix}/${line}` : line;
+        if (currentDate && !map.has(key)) map.set(key, currentDate);
       }
     }
   } catch (e) {
     console.warn(
-      "Could not read git history for file dates (falling back to filesystem mtime):",
+      `Could not read git history for file dates in ${cwd} (falling back to filesystem mtime):`,
       e.message
     );
+  }
+}
+
+// Submodules (e.g. iptv/) have their own history — the superproject's log only
+// records the pointer commit, not the files inside — so each one is walked in
+// its own working directory and its paths prefixed to match the index. A
+// shallow submodule only has its tip commit, so every file in it shares that
+// one date until someone runs `git -C <path> fetch --unshallow`.
+function listSubmodulePaths() {
+  try {
+    const output = execSync("git config --file .gitmodules --get-regexp path", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/)[1])
+      .filter(Boolean);
+  } catch {
+    return []; // no .gitmodules, or not a git repo at all
+  }
+}
+
+function buildFileDateMap() {
+  const map = new Map();
+  collectDates(map, ".");
+  for (const submodulePath of listSubmodulePaths()) {
+    if (fs.existsSync(path.join(submodulePath, ".git"))) {
+      collectDates(map, submodulePath, submodulePath);
+    }
   }
   return map;
 }
 
-const fileDateMap = buildFileDateMap();
+// Built once per generateIndex() run rather than at import time, so requiring
+// this module (scripts/build.js does) doesn't shell out to git as a side effect.
+let fileDateMap = new Map();
 
 // Recursively scan directory
 function scanDirectory(dir, relativePath = "") {
@@ -158,6 +215,9 @@ function scanDirectory(dir, relativePath = "") {
       const itemRelativePath = relativePath
         ? `${relativePath}/${item.name}`
         : item.name;
+
+      const allowedHere = INCLUDE_ONLY.get(relativePath);
+      if (allowedHere && !allowedHere.has(item.name)) continue;
 
       if (item.isDirectory()) {
         if (EXCLUDED_DIRS.has(item.name) || item.name.startsWith(".")) {
@@ -223,14 +283,6 @@ function scanDirectory(dir, relativePath = "") {
   return entries;
 }
 
-console.log("Scanning repository...");
-const startTime = Date.now();
-
-const index = {
-  generated: new Date().toISOString(),
-  root: scanDirectory("."),
-};
-
 function countItems(items) {
   let files = 0, dirs = 0;
   for (const item of items) {
@@ -246,11 +298,33 @@ function countItems(items) {
   return { files, dirs };
 }
 
-const counts = countItems(index.root);
-index.stats = counts;
+// Scans `root` and returns the index object. `outFile` (when given) is where
+// the JSON is written; pass null to only get the object back — scripts/build.js
+// scans the repo but writes the JSON into dist/.
+//
+// Note that `root` must be the git repo root for the date map to line up: its
+// keys are repo-relative paths, and so are the index's.
+function generateIndex({ root = ".", outFile = "file_index.json", quiet = false } = {}) {
+  const log = quiet ? () => {} : console.log;
+  log("Scanning repository...");
+  const startTime = Date.now();
 
-fs.writeFileSync("file_index.json", JSON.stringify(index));
+  fileDateMap = buildFileDateMap();
 
-console.log(
-  `Done in ${Date.now() - startTime}ms. Found ${counts.files} files in ${counts.dirs} directories.`
-);
+  const index = {
+    generated: new Date().toISOString(),
+    root: scanDirectory(root),
+  };
+  index.stats = countItems(index.root);
+
+  if (outFile) fs.writeFileSync(outFile, JSON.stringify(index));
+
+  log(
+    `Done in ${Date.now() - startTime}ms. Found ${index.stats.files} files in ${index.stats.dirs} directories.`
+  );
+  return index;
+}
+
+if (require.main === module) generateIndex();
+
+module.exports = { generateIndex, EXCLUDED_DIRS, EXCLUDED_FILES };

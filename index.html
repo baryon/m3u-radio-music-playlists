@@ -10,7 +10,11 @@
     <meta property="og:description" content="Browse and preview files from this repository directly in your browser." />
     <meta property="og:type" content="website" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%2358a6ff' d='M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z'/%3E%3C/svg%3E" />
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <!-- Vendored (vendor/hls.min.js, pinned 1.6.16) rather than loaded from a
+         CDN so the site keeps working offline, behind a firewall, or from a
+         plain `npm run serve`. If it fails to load anyway, hlsSupported()
+         degrades to the browser's own HLS handling instead of throwing. -->
+    <script src="./vendor/hls.min.js"></script>
     
     <style>
         /* Styles remain consistent */
@@ -2742,6 +2746,18 @@
             }
         }
 
+        function isHlsUrl(urlLower) {
+            return urlLower.includes(".m3u8") || urlLower.includes("application/x-mpegurl");
+        }
+        // hls.js is vendored rather than pulled from a CDN, but a blocked or
+        // failed script tag still leaves Hls undefined — and this used to be a
+        // bare Hls.isSupported() call, so that one missing file threw and broke
+        // playback for *every* stream, HLS or not. Falling through to the plain
+        // src path also covers Safari, which plays HLS natively and reports
+        // Hls.isSupported() === false.
+        function canUseHlsJs() {
+            return typeof Hls !== "undefined" && Hls.isSupported();
+        }
         // Shared by both the video and audio branches of playPlaylistTrack:
         // wires the "loaded/error/ended" handlers and picks HLS vs a plain
         // src, since that logic is identical regardless of which kind of
@@ -2759,7 +2775,7 @@
                 goToNextTrack();
             };
 
-            if (Hls.isSupported() && (urlLower.includes(".m3u8") || urlLower.includes("application/x-mpegurl"))) {
+            if (isHlsUrl(urlLower) && canUseHlsJs()) {
                 currentHls = new Hls();
                 currentHls.loadSource(finalUrl);
                 currentHls.attachMedia(mediaEl);

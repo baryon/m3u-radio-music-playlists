@@ -1,0 +1,4 @@
+[submodule "iptv"]
+	path = iptv
+	url = https://github.com/iptv-org/iptv.git
+	shallow = true

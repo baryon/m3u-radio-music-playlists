@@ -1,0 +1,8 @@
+# Build output — regenerate with `npm run build`
+dist/
+
+# Generated at deploy time by generate_index.js
+file_index.json
+
+node_modules/
+.DS_Store
