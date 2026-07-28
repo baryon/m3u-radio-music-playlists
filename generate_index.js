@@ -327,4 +327,4 @@ function generateIndex({ root = ".", outFile = "file_index.json", quiet = false 
 
 if (require.main === module) generateIndex();
 
-module.exports = { generateIndex, EXCLUDED_DIRS, EXCLUDED_FILES };
+module.exports = { generateIndex, getFileCategory, formatSize, EXCLUDED_DIRS, EXCLUDED_FILES };

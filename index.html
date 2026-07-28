@@ -2341,13 +2341,30 @@
                 let currentTitle = null;
                 let currentHeaderLines = [];
 
+                // In #EXTINF the station name is whatever follows the comma
+                // that separates it from the attributes — but attribute values
+                // are quoted and can contain commas of their own. iptv-org's
+                // index.m3u carries http-user-agent="...(KHTML, like Gecko)...",
+                // and splitting on the first comma turned the title into a
+                // chunk of the user-agent string. Only commas outside quotes
+                // count.
+                function extinfTitleComma(line) {
+                    let inQuotes = false;
+                    for (let i = 0; i < line.length; i++) {
+                        const ch = line[i];
+                        if (ch === '"') inQuotes = !inQuotes;
+                        else if (ch === "," && !inQuotes) return i;
+                    }
+                    return -1;
+                }
+
                 for (let line of lines) {
                     line = line.trim();
                     if (!line) continue;
                     
                     if (line.startsWith("#EXTINF:")) {
                         currentHeaderLines = [line];
-                        const commaIndex = line.indexOf(',');
+                        const commaIndex = extinfTitleComma(line);
                         if (commaIndex !== -1) {
                             currentTitle = line.substring(commaIndex + 1).trim();
                         }
